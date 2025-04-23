@@ -1,7 +1,7 @@
 import os
 import argparse
 import torch
-from accelerate import DeepSpeedPlugin, Accelerator
+from accelerate import DeepSpeedPlugin
 
 from .utils import setup_logging
 
@@ -75,7 +75,7 @@ def prepare_deepspeed_plugin(args: argparse.Namespace):
 
     try:
         import deepspeed
-    except ImportError as e:
+    except ImportError:
         logger.error(
             "deepspeed is not installed. please install deepspeed in your environment with following command. DS_BUILD_OPS=0 pip install deepspeed"
         )
@@ -128,7 +128,7 @@ def prepare_deepspeed_model(args: argparse.Namespace, **models):
             
             self.models = torch.nn.ModuleDict()
             
-            wrap_model_forward_with_torch_autocast = args.mixed_precision is not "no"
+            wrap_model_forward_with_torch_autocast = args.mixed_precision != "no"
 
             for key, model in kw_models.items():
                 if isinstance(model, list):
@@ -152,7 +152,7 @@ def prepare_deepspeed_model(args: argparse.Namespace, **models):
 
         def __wrap_model_forward_with_torch_autocast(self, model):
             
-            assert hasattr(model, "forward"), f"model must have a forward method."
+            assert hasattr(model, "forward"), "model must have a forward method."
 
             forward_fn = model.forward
             
