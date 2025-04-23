@@ -160,6 +160,10 @@ def prepare_deepspeed_model(args: argparse.Namespace, **models):
                 try:
                     device_type=model.device.type
                 except AttributeError:
+                    logger.warning(
+                            "[DeepSpeed] model.device is not available. Using get_preferred_device() "
+                            "to determine the device_type for torch.autocast()."
+                    )                    
                     device_type = get_preferred_device().type
                 
                 with torch.autocast(device_type=device_type):
