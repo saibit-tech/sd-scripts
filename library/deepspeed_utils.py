@@ -1,7 +1,7 @@
 import os
 import argparse
 import torch
-from accelerate import DeepSpeedPlugin
+from accelerate import DeepSpeedPlugin, Accelerator
 
 from .utils import setup_logging
 
@@ -15,8 +15,16 @@ logger = logging.getLogger(__name__)
 
 def add_deepspeed_arguments(parser: argparse.ArgumentParser):
     # DeepSpeed Arguments. https://huggingface.co/docs/accelerate/usage_guides/deepspeed
-    parser.add_argument("--deepspeed", action="store_true", help="enable deepspeed training")
-    parser.add_argument("--zero_stage", type=int, default=2, choices=[0, 1, 2, 3], help="Possible options are 0,1,2,3.")
+    parser.add_argument(
+        "--deepspeed", action="store_true", help="enable deepspeed training"
+    )
+    parser.add_argument(
+        "--zero_stage",
+        type=int,
+        default=2,
+        choices=[0, 1, 2, 3],
+        help="Possible options are 0,1,2,3.",
+    )
     parser.add_argument(
         "--offload_optimizer_device",
         type=str,
@@ -75,7 +83,7 @@ def prepare_deepspeed_plugin(args: argparse.Namespace):
 
     try:
         import deepspeed
-    except ImportError:
+    except ImportError as e:
         logger.error(
             "deepspeed is not installed. please install deepspeed in your environment with following command. DS_BUILD_OPS=0 pip install deepspeed"
         )
@@ -92,17 +100,25 @@ def prepare_deepspeed_plugin(args: argparse.Namespace):
         zero3_init_flag=args.zero3_init_flag,
         zero3_save_16bit_model=args.zero3_save_16bit_model,
     )
-    deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = args.train_batch_size
-    deepspeed_plugin.deepspeed_config["train_batch_size"] = (
-        args.train_batch_size * args.gradient_accumulation_steps * int(os.environ["WORLD_SIZE"])
+    deepspeed_plugin.deepspeed_config["train_micro_batch_size_per_gpu"] = (
+        args.train_batch_size
     )
-    
+    deepspeed_plugin.deepspeed_config["train_batch_size"] = (
+        args.train_batch_size
+        * args.gradient_accumulation_steps
+        * int(os.environ["WORLD_SIZE"])
+    )
+
     deepspeed_plugin.set_mixed_precision(args.mixed_precision)
     if args.mixed_precision.lower() == "fp16":
-        deepspeed_plugin.deepspeed_config["fp16"]["initial_scale_power"] = 0  # preventing overflow.
+        deepspeed_plugin.deepspeed_config["fp16"]["initial_scale_power"] = (
+            0  # preventing overflow.
+        )
     if args.full_fp16 or args.fp16_master_weights_and_gradients:
         if args.offload_optimizer_device == "cpu" and args.zero_stage == 2:
-            deepspeed_plugin.deepspeed_config["fp16"]["fp16_master_weights_and_grads"] = True
+            deepspeed_plugin.deepspeed_config["fp16"][
+                "fp16_master_weights_and_grads"
+            ] = True
             logger.info("[DeepSpeed] full fp16 enable.")
         else:
             logger.info(
@@ -125,56 +141,56 @@ def prepare_deepspeed_model(args: argparse.Namespace, **models):
     class DeepSpeedWrapper(torch.nn.Module):
         def __init__(self, **kw_models) -> None:
             super().__init__()
-            
+
             self.models = torch.nn.ModuleDict()
-            
-            wrap_model_forward_with_torch_autocast = args.mixed_precision != "no"
+
+            wrap_model_forward_with_torch_autocast = args.mixed_precision is not "no"
 
             for key, model in kw_models.items():
                 if isinstance(model, list):
                     model = torch.nn.ModuleList(model)
-                                            
-                assert isinstance(
-                    model, torch.nn.Module
-                ), f"model must be an instance of torch.nn.Module, but got {key} is {type(model)}"
+
+                assert isinstance(model, torch.nn.Module), (
+                    f"model must be an instance of torch.nn.Module, but got {key} is {type(model)}"
+                )
 
                 if wrap_model_forward_with_torch_autocast:
-                    model = self.__wrap_model_with_torch_autocast(model)  
-                
+                    model = self.__wrap_model_with_torch_autocast(model)
+
                 self.models.update(torch.nn.ModuleDict({key: model}))
 
         def __wrap_model_with_torch_autocast(self, model):
             if isinstance(model, torch.nn.ModuleList):
-                model = [self.__wrap_model_forward_with_torch_autocast(m) for m in model]
+                model = [
+                    self.__wrap_model_forward_with_torch_autocast(m) for m in model
+                ]
             else:
                 model = self.__wrap_model_forward_with_torch_autocast(model)
             return model
 
         def __wrap_model_forward_with_torch_autocast(self, model):
-            
-            assert hasattr(model, "forward"), "model must have a forward method."
+            assert hasattr(model, "forward"), f"model must have a forward method."
 
             forward_fn = model.forward
-            
+
             def forward(*args, **kwargs):
                 try:
-                    device_type=model.device.type
+                    device_type = model.device.type
                 except AttributeError:
                     logger.warning(
-                            "[DeepSpeed] model.device is not available. Using get_preferred_device() "
-                            "to determine the device_type for torch.autocast()."
-                    )                    
+                        "[DeepSpeed] model.device is not available. Using get_preferred_device() "
+                        "to determine the device_type for torch.autocast()."
+                    )
                     device_type = get_preferred_device().type
-                
+
                 with torch.autocast(device_type=device_type):
                     return forward_fn(*args, **kwargs)
 
             model.forward = forward
             return model
-        
+
         def get_models(self):
             return self.models
-        
 
     ds_model = DeepSpeedWrapper(**models)
     return ds_model
